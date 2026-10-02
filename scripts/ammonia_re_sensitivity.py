@@ -524,27 +524,33 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
   const D = {data_json};
   const G = 'es_graph';
   const sld = document.getElementById('es_sld'), lab = document.getElementById('es_lab');
-  function esApply(i){{
+  // LEGER (instantane pendant le glissement) : titre + barres
+  function applyLight(i){{
+    lab.textContent = D.labels[i];
     Plotly.restyle(G, {{y: [D.pe[i]]}}, [D.idx.pe]);
     Plotly.restyle(G, {{y: [D.ea[i]]}}, [D.idx.ea]);
+    Plotly.relayout(G, {{'title.text': D.titles[i]}});
+  }}
+  // LOURD (differe apres l'arret) : aires de dispatch + sankey
+  function applyHeavy(i){{
     if (D.idx.elec.length) Plotly.restyle(G, {{y: D.elec[i]}}, D.idx.elec);
     if (D.idx.heat.length) Plotly.restyle(G, {{y: D.heat[i]}}, D.idx.heat);
     const s = D.sk[i];
     Plotly.restyle(G, {{'link.source':[s.source], 'link.target':[s.target],
                         'link.value':[s.value], 'link.color':[s.color]}}, [D.idx.sk]);
-    Plotly.relayout(G, {{'title.text': D.titles[i]}});
-    lab.textContent = D.labels[i];
   }}
-  // throttle : au plus une mise a jour par frame d'animation -> slider fluide
-  let pending = null, scheduled = false;
+  let pending = 0, scheduled = false, heavyTimer = null;
   function onInput(v){{
     pending = v;
-    if (!scheduled) {{
+    if (!scheduled) {{                       // leger : 1 maj / frame d'animation
       scheduled = true;
-      requestAnimationFrame(() => {{ scheduled = false; esApply(pending); }});
+      requestAnimationFrame(() => {{ scheduled = false; applyLight(pending); }});
     }}
+    clearTimeout(heavyTimer);                // lourd : seulement apres ~140ms d'immobilite
+    heavyTimer = setTimeout(() => applyHeavy(pending), 140);
   }}
   sld.addEventListener('input', e => onInput(parseInt(e.target.value)));
+  sld.addEventListener('change', e => applyHeavy(parseInt(e.target.value)));  // au relache
   window.addEventListener('load', () => {{ lab.textContent = D.labels[0]; }});
 </script>
 </body></html>"""
