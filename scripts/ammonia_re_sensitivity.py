@@ -279,36 +279,51 @@ def _area_traces(go, df, group, visible):
     return traces, pos, neg
 
 
-def build_site(summary, resource_use, elec_assets, ref_price, html_path, project_root):
-    """Genere un HTML Plotly interactif. Slider en bas pilotant les sections lourdes.
+def _union_cols(frames_df, sel, frac=0.02):
+    """Colonnes significatives (union sur les frames), triees par importance."""
+    mx = {}
+    for p in sel:
+        df = frames_df.get(p)
+        if df is None:
+            continue
+        for c, v in df.abs().max().items():
+            mx[c] = max(mx.get(c, 0.0), float(v))
+    top = max(mx.values()) if mx else 0.0
+    cols = [c for c in mx if mx[c] > frac * top]
+    return sorted(cols, key=lambda c: -mx[c])
 
-    Sections (= graphes de run_energyscope.py) :
-      1. Tendances cout / GWP / conso ammoniac RE sur tout le scope (tous les points).
-      2. Energie primaire : ressources utilisees [GWh/an]      (plot_barh)   -- echelle fixe
-      3. Capacites installees electricite [GW_e]               (plot_barh)   -- echelle fixe
-      4. Dispatch electricite sur 12 jours types               (plot_layer_elec_td)
-      5. Dispatch chaleur decentralisee basse T sur 12 jours types (hourly_plot)
+
+def build_site(summary, resource_use, elec_assets, ref_price, html_path, project_root):
+    """Genere un HTML Plotly interactif, OPTIMISE pour un slider fluide.
+
+    Au lieu d'empiler une copie de chaque section par scenario (des milliers de
+    traces -> slider saccade), on garde un NOMBRE FIXE de traces et on met a jour
+    leurs DONNEES via Plotly.restyle au deplacement du slider (throttle rAF).
+
+    Sections (= graphes de run_energyscope.py), pilotees par le slider sticky :
+      1. Tendances cout / GWP / conso ammoniac RE (toujours visibles, tous les points).
+      2. Energie primaire : ressources utilisees [GWh/an]   (echelle fixe)
+      3. Capacites installees electricite [GW_e]            (echelle fixe)
+      4. Dispatch electricite - 12 jours types [GW]
+      5. Dispatch chaleur decentralisee basse T - 12 jours types [GW]
       6. Diagramme de Sankey (ordre des noeuds fige, identique partout)
-    Les sections 2-6 sont montrees sur un sous-echantillon de MAX_FRAMES scenarios.
     """
-    import numpy as _np
+    import json
+    import webbrowser
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
     from energyscope.postprocessing.postprocessing import read_layer
+
+    def r2(seq):   # arrondi pour alleger le JSON / accelerer le parsing
+        return [round(float(v), 2) for v in seq]
 
     labels = summary['label'].tolist()
     pct = summary['pct'].tolist()
     cases = summary['case'].tolist()
     n = len(summary)
+    sel = list(range(n))        # pleine resolution (1 position par scenario)
 
-    # sous-echantillon regulier de scenarios pour les sections lourdes
-    if n <= MAX_FRAMES:
-        sel = list(range(n))
-    else:
-        sel = sorted({int(round(k * (n - 1) / (MAX_FRAMES - 1))) for k in range(MAX_FRAMES)})
-    first = sel[0]
-
-    # --- Energie primaire (echelle fixe sur TOUS les scenarios) ---------
+    # --- Energie primaire (echelle fixe) --------------------------------
     all_used = pd.DataFrame(resource_use).fillna(0.0)
     keep = all_used.index[(all_used.abs() > 1.0).any(axis=1)].tolist()
     for r in ('AMMONIA_RE', 'AMMONIA'):
@@ -316,14 +331,16 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
             keep.append(r)
     keep = sorted(keep, key=lambda r: -all_used.loc[r].max())
     pe_max = float(all_used.reindex(keep).max().max()) if keep else 1.0
+    pe_y = [r2(all_used[labels[p]].reindex(keep).fillna(0.0).values) for p in sel]
 
     # --- Capacites electriques (echelle fixe) ---------------------------
     ea_all = pd.DataFrame(elec_assets).fillna(0.0)
     ea_keep = ea_all.index[(ea_all.abs() > 0.01).any(axis=1)].tolist()
     ea_keep = sorted(ea_keep, key=lambda r: -ea_all.loc[r].max())
     ea_max = float(ea_all.reindex(ea_keep).max().max()) if ea_keep else 1.0
+    ea_y = [r2(ea_all[labels[p]].reindex(ea_keep).fillna(0.0).values) for p in sel]
 
-    # --- Pre-lecture des layers horaires + flux sankey des frames -------
+    # --- Pre-lecture des layers horaires + flux sankey ------------------
     le_data, lh_data, flows_data = {}, {}, {}
     for p in sel:
         case = cases[p]
@@ -339,11 +356,53 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
         sfile = base / 'sankey' / 'input2sankey.csv'
         flows_data[p] = pd.read_csv(sfile) if sfile.exists() else None
 
-    # disposition figee du sankey a partir de l'union des flux affiches
+    # jeux de colonnes FIXES (union) pour que chaque section ait un nombre
+    # de traces constant que l'on se contente de reactualiser.
+    elec_cols = _union_cols(le_data, sel)
+    heat_cols = _union_cols(lh_data, sel)
+    xlen_e = max((len(le_data[p]) for p in sel if le_data.get(p) is not None), default=0)
+    xlen_h = max((len(lh_data[p]) for p in sel if lh_data.get(p) is not None), default=0)
+    xe, xh = list(range(1, xlen_e + 1)), list(range(1, xlen_h + 1))
+
+    def frame_series(dmap, cols, xlen):
+        """Pour chaque frame : liste (alignee sur cols) des series y."""
+        out, pos, neg = [], 0.0, 0.0
+        for p in sel:
+            df = dmap.get(p)
+            arrs = []
+            for c in cols:
+                if df is not None and c in df.columns:
+                    arrs.append(r2(df[c].values))
+                else:
+                    arrs.append([0.0] * xlen)
+            out.append(arrs)
+            if df is not None and len(df):
+                pos = max(pos, float(df.clip(lower=0).sum(axis=1).max()))
+                neg = min(neg, float(df.clip(upper=0).sum(axis=1).min()))
+        return out, pos, neg
+
+    elec_y, e_pos, e_neg = frame_series(le_data, elec_cols, xlen_e)
+    heat_y, h_pos, h_neg = frame_series(lh_data, heat_cols, xlen_h)
+
+    # --- Sankey : disposition figee + donnees de liens par frame --------
     union = pd.concat([f for f in flows_data.values() if f is not None], ignore_index=True) \
         if any(f is not None for f in flows_data.values()) else pd.DataFrame(columns=['source', 'target'])
     s_labels, s_idx, s_xs, s_ys = _node_layout(union)
+    sankey_data = []
+    for p in sel:
+        f = flows_data.get(p)
+        if f is None:
+            sankey_data.append({'source': [], 'target': [], 'value': [], 'color': []})
+            continue
+        g = (f.groupby(['source', 'target'])
+             .agg(value=('realValue', 'sum'), color=('layerColor', 'first')).reset_index())
+        sankey_data.append({
+            'source': [s_idx[s] for s in g['source']],
+            'target': [s_idx[t] for t in g['target']],
+            'value': r2(g['value'].values),
+            'color': [_hex_rgba(h, 0.4) for h in g['color']]})
 
+    # ================= Construction de la figure (traces FIXES) =========
     fig = make_subplots(
         rows=6, cols=3,
         specs=[[{'type': 'xy'}, {'type': 'xy'}, {'type': 'xy'}],
@@ -362,7 +421,7 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
             'Dispatch chaleur decentralisee basse T - 12 jours types [GW]',
             'Diagramme de Sankey du systeme energetique [TWh] (ordre des noeuds fige)'))
 
-    # --- Rangee 1 : tendances (toujours visibles) -----------------------
+    # Rangee 1 : tendances (statiques)
     fig.add_trace(go.Scatter(x=pct, y=summary['total_cost_Meur'], mode='lines+markers',
                              line_color='#2563eb', showlegend=False,
                              hovertemplate='%{x:+.1f}%%<br>%{y:.0f} Meuro<extra></extra>'), row=1, col=1)
@@ -372,72 +431,58 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
     fig.add_trace(go.Scatter(x=pct, y=summary[f'{RESOURCE}_used_GWh'], mode='lines+markers',
                              line_color='#059669', showlegend=False,
                              hovertemplate='%{x:+.1f}%%<br>%{y:.0f} GWh<extra></extra>'), row=1, col=3)
-    always = [0, 1, 2]
-    frame_tr = {p: [] for p in sel}
 
-    def add(tr, row, col, p):
-        fig.add_trace(tr, row=row, col=col)
-        frame_tr[p].append(len(fig.data) - 1)
+    # Rangee 2 : energie primaire (1 trace)
+    fig.add_trace(go.Bar(x=keep, y=pe_y[0], marker_color='#6366f1', showlegend=False,
+                         hovertemplate='%{x}<br>%{y:.0f} GWh<extra></extra>'), row=2, col=1)
+    pe_tr = len(fig.data) - 1
 
-    # --- Rangee 2 : energie primaire ------------------------------------
+    # Rangee 3 : capacites electriques (1 trace)
+    fig.add_trace(go.Bar(x=ea_keep, y=ea_y[0], marker_color='#0ea5e9', showlegend=False,
+                         hovertemplate='%{x}<br>%{y:.2f} GW_e<extra></extra>'), row=3, col=1)
+    ea_tr = len(fig.data) - 1
+
+    # Rangee 4 : dispatch elec (1 trace par colonne fixe)
+    elec_tr = []
+    for k, c in enumerate(elec_cols):
+        fig.add_trace(go.Scatter(x=xe, y=elec_y[0][k], name=str(c), mode='lines',
+                                 stackgroup='elec', line_width=0.3, showlegend=False,
+                                 hovertemplate=str(c) + '<br>h=%{x}<br>%{y:.2f} GW<extra></extra>'),
+                      row=4, col=1)
+        elec_tr.append(len(fig.data) - 1)
+
+    # Rangee 5 : dispatch chaleur (1 trace par colonne fixe)
+    heat_tr = []
+    for k, c in enumerate(heat_cols):
+        fig.add_trace(go.Scatter(x=xh, y=heat_y[0][k], name=str(c), mode='lines',
+                                 stackgroup='heat', line_width=0.3, showlegend=False,
+                                 hovertemplate=str(c) + '<br>h=%{x}<br>%{y:.2f} GW<extra></extra>'),
+                      row=5, col=1)
+        heat_tr.append(len(fig.data) - 1)
+
+    # Rangee 6 : sankey (1 trace)
+    sd0 = sankey_data[0]
+    fig.add_trace(go.Sankey(
+        arrangement='fixed',
+        node=dict(pad=28, thickness=14, label=s_labels, x=s_xs, y=s_ys,
+                  color='#b4b4b4', line=dict(color='black', width=0.3)),
+        link=dict(source=sd0['source'], target=sd0['target'],
+                  value=sd0['value'], color=sd0['color']),
+        valueformat='.1f', valuesuffix=' TWh'), row=6, col=1)
+    sankey_tr = len(fig.data) - 1
+
+    # titres par frame
+    titles = []
     for p in sel:
-        col = all_used[labels[p]].reindex(keep).fillna(0.0)
-        add(go.Bar(x=keep, y=col.values, marker_color='#6366f1', visible=(p == first),
-                   showlegend=False, hovertemplate='%{x}<br>%{y:.0f} GWh<extra></extra>'), 2, 1, p)
-
-    # --- Rangee 3 : capacites electriques -------------------------------
-    for p in sel:
-        col = ea_all[labels[p]].reindex(ea_keep).fillna(0.0)
-        add(go.Bar(x=ea_keep, y=col.values, marker_color='#0ea5e9', visible=(p == first),
-                   showlegend=False, hovertemplate='%{x}<br>%{y:.2f} GW_e<extra></extra>'), 3, 1, p)
-
-    # --- Rangees 4 & 5 : dispatch horaire elec et chaleur ---------------
-    e_pos = e_neg = h_pos = h_neg = 0.0
-    for p in sel:
-        if le_data.get(p) is not None:
-            tr, pos, neg = _area_traces(go, le_data[p], f'e{p}', p == first)
-            e_pos, e_neg = max(e_pos, pos), min(e_neg, neg)
-            for t in tr:
-                add(t, 4, 1, p)
-        if lh_data.get(p) is not None:
-            tr, pos, neg = _area_traces(go, lh_data[p], f'h{p}', p == first)
-            h_pos, h_neg = max(h_pos, pos), min(h_neg, neg)
-            for t in tr:
-                add(t, 5, 1, p)
-
-    # --- Rangee 6 : sankey ----------------------------------------------
-    for p in sel:
-        if flows_data.get(p) is not None:
-            tr = _sankey_trace(flows_data[p], s_labels, s_idx, s_xs, s_ys, p == first)
-        else:
-            tr = go.Sankey(visible=(p == first), node=dict(label=s_labels, x=s_xs, y=s_ys,
-                           color='#b4b4b4'), link=dict(source=[], target=[], value=[]))
-        add(tr, 6, 1, p)
-
-    total = len(fig.data)
-
-    # --- Etats du slider (un par frame affiche) -------------------------
-    # On NE met PAS le slider interne de Plotly : on genere un slider HTML
-    # fixe (sticky) en haut de page, utilisable depuis n'importe ou au scroll.
-    import json
-    import webbrowser
-    frames = []
-    for p in sel:
-        vis = [False] * total
-        for k in always:
-            vis[k] = True
-        for k in frame_tr[p]:
-            vis[k] = True
         price = summary['price_Meur_per_GWh'].iloc[p]
         cost = summary['total_cost_Meur'].iloc[p]
         gwp = summary['total_gwp_ktCO2'].iloc[p]
-        title = (f'Prix {RESOURCE} importe : {labels[p]} du prix de reference '
-                 f'({price:.4f} Meuro/GWh, ref={ref_price:.4f})   |   '
-                 f'Cout total {cost:,.0f} Meuro/an   |   GWP {gwp:,.0f} ktCO2-eq./an')
-        frames.append({'visible': vis, 'title': title, 'label': labels[p]})
+        titles.append(f'Prix {RESOURCE} importe : {labels[p]} du prix de reference '
+                      f'({price:.4f} Meuro/GWh, ref={ref_price:.4f})   |   '
+                      f'Cout total {cost:,.0f} Meuro/an   |   GWP {gwp:,.0f} ktCO2-eq./an')
 
     fig.update_layout(
-        title=dict(text=frames[0]['title'], x=0.01, font_size=14),
+        title=dict(text=titles[0], x=0.01, font_size=14),
         template='plotly_white', bargap=0.25, height=2600,
         margin=dict(l=60, r=30, t=80, b=60))
     for c in (1, 2, 3):
@@ -451,9 +496,14 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
     if h_pos or h_neg:
         fig.update_yaxes(range=[h_neg * 1.05, h_pos * 1.05], title_text='GW', row=5, col=1)
 
-    # --- Assemblage HTML : barre de controle sticky + figure Plotly -----
+    # ================= HTML : slider sticky + restyle throttle ==========
     fig_html = fig.to_html(full_html=False, include_plotlyjs='cdn', div_id='es_graph')
-    data_json = json.dumps(frames)
+    payload = {
+        'labels': labels, 'titles': titles,
+        'pe': pe_y, 'ea': ea_y, 'elec': elec_y, 'heat': heat_y, 'sk': sankey_data,
+        'idx': {'pe': pe_tr, 'ea': ea_tr, 'elec': elec_tr, 'heat': heat_tr, 'sk': sankey_tr},
+    }
+    data_json = json.dumps(payload)
     page = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <title>Sensibilite prix ammoniac RE - {YEAR}</title></head>
 <body style="margin:0;font-family:Segoe UI,Arial,sans-serif;">
@@ -465,21 +515,37 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
     <b id="es_lab" style="color:#2563eb;"></b>
     <span style="color:#888;font-size:12px;">(glisser pour comparer les scenarios depuis n'importe ou)</span>
   </div>
-  <input id="es_sld" type="range" min="0" max="{len(frames) - 1}" value="0" step="1"
+  <input id="es_sld" type="range" min="0" max="{n - 1}" value="0" step="1"
          style="width:100%;cursor:pointer;">
 </div>
 <div style="height:64px;"></div>
 {fig_html}
 <script>
-  const ES_FRAMES = {data_json};
+  const D = {data_json};
+  const G = 'es_graph';
   const sld = document.getElementById('es_sld'), lab = document.getElementById('es_lab');
   function esApply(i){{
-    const f = ES_FRAMES[i];
-    Plotly.update('es_graph', {{visible: f.visible}}, {{'title.text': f.title}});
-    lab.textContent = f.label;
+    Plotly.restyle(G, {{y: [D.pe[i]]}}, [D.idx.pe]);
+    Plotly.restyle(G, {{y: [D.ea[i]]}}, [D.idx.ea]);
+    if (D.idx.elec.length) Plotly.restyle(G, {{y: D.elec[i]}}, D.idx.elec);
+    if (D.idx.heat.length) Plotly.restyle(G, {{y: D.heat[i]}}, D.idx.heat);
+    const s = D.sk[i];
+    Plotly.restyle(G, {{'link.source':[s.source], 'link.target':[s.target],
+                        'link.value':[s.value], 'link.color':[s.color]}}, [D.idx.sk]);
+    Plotly.relayout(G, {{'title.text': D.titles[i]}});
+    lab.textContent = D.labels[i];
   }}
-  sld.addEventListener('input', e => esApply(parseInt(e.target.value)));
-  window.addEventListener('load', () => esApply(0));
+  // throttle : au plus une mise a jour par frame d'animation -> slider fluide
+  let pending = null, scheduled = false;
+  function onInput(v){{
+    pending = v;
+    if (!scheduled) {{
+      scheduled = true;
+      requestAnimationFrame(() => {{ scheduled = false; esApply(pending); }});
+    }}
+  }}
+  sld.addEventListener('input', e => onInput(parseInt(e.target.value)));
+  window.addEventListener('load', () => {{ lab.textContent = D.labels[0]; }});
 </script>
 </body></html>"""
     with open(html_path, 'w') as fh:
