@@ -128,7 +128,9 @@ def main():
     for i, pct in enumerate(pct_grid):
         it0 = time.time()
         price = ref_price * (1.0 + pct / 100.0)
-        case = f'{CASE_PREFIX}_{i:03d}'
+        # nom du case base sur le PRIX (dixiemes de %), pas l'index : le cache
+        # reste correct quelle que soit la grille (pas de collision entre runs).
+        case = f'{CASE_PREFIX}_{int(round(pct * 10)):+05d}'
         label = f'{pct:+.1f}%'
         cached = outputs_exist(project_root, case) and not force
         try:
@@ -157,7 +159,7 @@ def main():
         resource_use[label] = used
         elec_assets[label] = pd.to_numeric(ea, errors='coerce').fillna(0.0)
         records.append({
-            'scenario': i, 'label': label, 'pct': float(pct),
+            'scenario': i, 'case': case, 'label': label, 'pct': float(pct),
             'price_Meur_per_GWh': price,
             'total_cost_Meur': float(cost), 'total_gwp_ktCO2': float(gwp),
             f'{RESOURCE}_used_GWh': float(used.get(RESOURCE, 0.0)),
@@ -225,11 +227,18 @@ def _node_layout(union_flows):
         if not changed:
             break
     maxd = max(depth.values()) or 1
-    N = max(len(labels), 1)
-    xs, ys = [0.0] * len(labels), [0.0] * len(labels)
+    # regrouper par colonne (profondeur) puis repartir UNIFORMEMENT en hauteur :
+    # maximise l'espace entre noeuds tout en gardant un ordre stable (rang global).
+    cols = {}
     for l in labels:
-        xs[idx[l]] = 0.02 + 0.96 * (depth[l] / maxd)
-        ys[idx[l]] = 0.02 + 0.96 * (idx[l] / max(N - 1, 1))   # rang global -> ordre fixe
+        cols.setdefault(depth[l], []).append(l)
+    xs, ys = [0.0] * len(labels), [0.0] * len(labels)
+    for d, members in cols.items():
+        members.sort(key=lambda l: idx[l])          # ordre global stable dans la colonne
+        m = len(members)
+        for r, l in enumerate(members):
+            xs[idx[l]] = 0.05 + 0.90 * (d / maxd)
+            ys[idx[l]] = 0.03 + 0.94 * ((r + 0.5) / m)
     return labels, idx, xs, ys
 
 
@@ -241,7 +250,7 @@ def _sankey_trace(flows, labels, idx, xs, ys, visible):
          .reset_index())
     return go.Sankey(
         arrangement='fixed', visible=visible,
-        node=dict(pad=12, thickness=15, label=labels, x=xs, y=ys,
+        node=dict(pad=28, thickness=14, label=labels, x=xs, y=ys,
                   color='#b4b4b4', line=dict(color='black', width=0.3)),
         link=dict(source=[idx[s] for s in g['source']],
                   target=[idx[t] for t in g['target']],
@@ -287,7 +296,7 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
 
     labels = summary['label'].tolist()
     pct = summary['pct'].tolist()
-    scen = summary['scenario'].tolist()
+    cases = summary['case'].tolist()
     n = len(summary)
 
     # sous-echantillon regulier de scenarios pour les sections lourdes
@@ -315,7 +324,7 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
     # --- Pre-lecture des layers horaires + flux sankey des frames -------
     le_data, lh_data, flows_data = {}, {}, {}
     for p in sel:
-        case = f'{CASE_PREFIX}_{scen[p]:03d}'
+        case = cases[p]
         base = project_root / 'case_studies' / case / 'output'
         try:
             le_data[p] = read_layer(case, 'layer_ELECTRICITY')
@@ -341,7 +350,7 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
                [{'type': 'xy', 'colspan': 3}, None, None],
                [{'type': 'xy', 'colspan': 3}, None, None],
                [{'type': 'domain', 'colspan': 3}, None, None]],
-        row_heights=[0.12, 0.15, 0.13, 0.17, 0.15, 0.28], vertical_spacing=0.055,
+        row_heights=[0.10, 0.13, 0.11, 0.16, 0.14, 0.36], vertical_spacing=0.05,
         subplot_titles=(
             'Cout total [Meuro/an]', 'GWP total [ktCO2-eq./an]',
             f'{RESOURCE} importe utilise [GWh/an]',
@@ -405,8 +414,12 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
 
     total = len(fig.data)
 
-    # --- Slider (en bas) ------------------------------------------------
-    steps = []
+    # --- Etats du slider (un par frame affiche) -------------------------
+    # On NE met PAS le slider interne de Plotly : on genere un slider HTML
+    # fixe (sticky) en haut de page, utilisable depuis n'importe ou au scroll.
+    import json
+    import webbrowser
+    frames = []
     for p in sel:
         vis = [False] * total
         for k in always:
@@ -419,15 +432,12 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
         title = (f'Prix {RESOURCE} importe : {labels[p]} du prix de reference '
                  f'({price:.4f} Meuro/GWh, ref={ref_price:.4f})   |   '
                  f'Cout total {cost:,.0f} Meuro/an   |   GWP {gwp:,.0f} ktCO2-eq./an')
-        steps.append(dict(method='update', label=labels[p],
-                          args=[{'visible': vis}, {'title.text': title}]))
+        frames.append({'visible': vis, 'title': title, 'label': labels[p]})
 
     fig.update_layout(
-        sliders=[dict(active=0, currentvalue={'prefix': 'Scenario de prix : '},
-                      pad={'t': 30}, steps=steps)],
-        title=dict(text=steps[0]['args'][1]['title.text'], x=0.01, font_size=14),
-        template='plotly_white', bargap=0.25, height=2100,
-        margin=dict(l=60, r=30, t=80, b=110))
+        title=dict(text=frames[0]['title'], x=0.01, font_size=14),
+        template='plotly_white', bargap=0.25, height=2600,
+        margin=dict(l=60, r=30, t=80, b=60))
     for c in (1, 2, 3):
         fig.update_xaxes(title_text='Variation du prix [%]', row=1, col=c)
     fig.update_yaxes(range=[0, pe_max * 1.05], title_text='GWh/an', row=2, col=1)
@@ -439,7 +449,43 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
     if h_pos or h_neg:
         fig.update_yaxes(range=[h_neg * 1.05, h_pos * 1.05], title_text='GW', row=5, col=1)
 
-    fig.write_html(str(html_path), auto_open=True, include_plotlyjs='cdn')
+    # --- Assemblage HTML : barre de controle sticky + figure Plotly -----
+    fig_html = fig.to_html(full_html=False, include_plotlyjs='cdn', div_id='es_graph')
+    data_json = json.dumps(frames)
+    page = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<title>Sensibilite prix ammoniac RE - {YEAR}</title></head>
+<body style="margin:0;font-family:Segoe UI,Arial,sans-serif;">
+<div id="ctrl" style="position:fixed;top:0;left:0;right:0;z-index:1000;
+     background:rgba(255,255,255,0.96);border-bottom:1px solid #d0d0d0;
+     box-shadow:0 2px 6px rgba(0,0,0,.08);padding:8px 18px;">
+  <div style="font-size:14px;color:#333;margin-bottom:4px;">
+    Scenario de prix {RESOURCE} importe :
+    <b id="es_lab" style="color:#2563eb;"></b>
+    <span style="color:#888;font-size:12px;">(glisser pour comparer les scenarios depuis n'importe ou)</span>
+  </div>
+  <input id="es_sld" type="range" min="0" max="{len(frames) - 1}" value="0" step="1"
+         style="width:100%;cursor:pointer;">
+</div>
+<div style="height:64px;"></div>
+{fig_html}
+<script>
+  const ES_FRAMES = {data_json};
+  const sld = document.getElementById('es_sld'), lab = document.getElementById('es_lab');
+  function esApply(i){{
+    const f = ES_FRAMES[i];
+    Plotly.update('es_graph', {{visible: f.visible}}, {{'title.text': f.title}});
+    lab.textContent = f.label;
+  }}
+  sld.addEventListener('input', e => esApply(parseInt(e.target.value)));
+  window.addEventListener('load', () => esApply(0));
+</script>
+</body></html>"""
+    with open(html_path, 'w') as fh:
+        fh.write(page)
+    try:
+        webbrowser.open('file://' + str(html_path))
+    except Exception:
+        pass
 
 
 if __name__ == '__main__':
