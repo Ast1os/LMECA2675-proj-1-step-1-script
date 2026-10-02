@@ -1,0 +1,31 @@
+.idea/
+
+energyscope.egg-info/
+
+energyscope/__pycache__/
+
+energyscope/misc/__pycache__/
+
+energyscope/preprocessing/__pycache__/
+
+*.log
+
+# Environnement virtuel (lourd, specifique a la machine)
+.venv/
+
+# Resultats de modele : on ignore les sorties brutes par scenario (cache local
+# volumineux) mais on versionne le dossier d'analyse agrege (csv + html).
+case_studies/*
+!case_studies/_ammonia_re_2035_analysis/
+
+energyscope/postprocessing/__pycache__/
+
+energyscope/postprocessing/draw_sankey/__pycache__/
+
+.DS_Store
+
+energyscope/preprocessing/td_selection/__pycache__/
+
+Docs/_build/
+
+*.pyc
