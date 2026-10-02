@@ -45,7 +45,9 @@ RESOURCE = 'AMMONIA_RE'         # ressource dont on fait varier le prix (c_op)
 PCT_MIN = -47.3                 # borne basse du scope [% du prix de reference]
 PCT_MAX = +89.9                 # borne haute du scope [% du prix de reference]
 STEP_PCT = 1.0                  # pas du balayage [points de %]  (1% -> ~139 scenarios)
-MAX_FRAMES = 16                 # nb de positions du slider pour les sections lourdes
+MAX_FRAMES = 139                # nb de positions du slider pour les sections lourdes
+#   = nb de scenarios -> slider au pas de 1% (HTML ~16 Mo). Reduire via la
+#   variable d'env MAX_FRAMES=<n> pour un HTML plus leger (ex. 16 -> ~9%).
 MAX_FRAMES = int(os.environ.get('MAX_FRAMES', MAX_FRAMES))
 # Variables d'environnement utiles :
 #   NB_POINTS=<n>  -> remplace le balayage par n points lineaires (tests rapides)
