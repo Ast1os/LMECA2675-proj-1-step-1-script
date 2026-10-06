@@ -1,3 +1,7 @@
+> 📊 **Projet LMECA2675 — analyse de sensibilité (prix ammoniac RE, 2035).**
+> Pour voir les résultats et comprendre comment les consulter, lis **[README_ANALYSE.md](./README_ANALYSE.md)**.
+> Le site interactif est ici : `case_studies/_ammonia_re_2035_analysis/ammonia_re_sensitivity.html`.
+
 ![energyScope logo](./Docs/images/estd_graphical_abstract.png)
 ===================
 
