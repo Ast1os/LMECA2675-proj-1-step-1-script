@@ -111,6 +111,9 @@ def main():
         pct_grid = np.arange(PCT_MIN, PCT_MAX + 1e-9, STEP_PCT)
         if pct_grid[-1] < PCT_MAX - 1e-9:          # garantir la borne haute exacte
             pct_grid = np.append(pct_grid, PCT_MAX)
+    # garantir le point 0% = optimum deterministe (prix de reference)
+    if not np.any(np.abs(pct_grid) < 1e-9):
+        pct_grid = np.sort(np.append(pct_grid, 0.0))
     n = len(pct_grid)
     force = bool(int(os.environ.get('FORCE', '0')))
     logging.info('%d scenarios (step=%.2f pts de %%, scope %.1f%% -> %.1f%%)',
@@ -431,6 +434,13 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
     fig.add_trace(go.Scatter(x=pct, y=summary[f'{RESOURCE}_used_GWh'], mode='lines+markers',
                              line_color='#059669', showlegend=False,
                              hovertemplate='%{x:+.1f}%%<br>%{y:.0f} GWh<extra></extra>'), row=1, col=3)
+
+    # repere "optimum deterministe" (prix de reference = 0%) sur les 3 tendances
+    for c in (1, 2, 3):
+        fig.add_vline(x=0, line_width=1, line_dash='dash', line_color='#888', row=1, col=c)
+    fig.add_annotation(x=0, yref='paper', y=1.0, text='optimum deterministe (0%)',
+                       showarrow=False, font=dict(size=10, color='#888'),
+                       xanchor='left', xshift=3, row=1, col=1)
 
     # Rangee 2 : energie primaire (1 trace)
     fig.add_trace(go.Bar(x=keep, y=pe_y[0], marker_color='#6366f1', showlegend=False,
