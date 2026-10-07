@@ -150,7 +150,11 @@ def main():
 
             out = es.read_outputs(case, hourly_data=False)
             cost = out['cost_breakdown'][['C_inv', 'C_maint', 'C_op']].sum().sum()
-            gwp = out['gwp_breakdown'][['GWP_constr', 'GWP_op']].sum().sum()
+            # GWP_op = grandeur reellement contrainte par le modele (<= gwp_limit) ;
+            # GWP_constr = emissions "grises" de construction (NON contraintes).
+            gwp_op = float(out['gwp_breakdown']['GWP_op'].sum())
+            gwp_constr = float(out['gwp_breakdown']['GWP_constr'].sum())
+            gwp = gwp_op + gwp_constr
             used = pd.to_numeric(out['resources_breakdown']['Used'],
                                  errors='coerce').fillna(0.0)
             # capacites installees des technos produisant de l'electricite [GW_e]
@@ -167,6 +171,7 @@ def main():
             'scenario': i, 'case': case, 'label': label, 'pct': float(pct),
             'price_Meur_per_GWh': price,
             'total_cost_Meur': float(cost), 'total_gwp_ktCO2': float(gwp),
+            'gwp_op_ktCO2': gwp_op, 'gwp_constr_ktCO2': gwp_constr,
             f'{RESOURCE}_used_GWh': float(used.get(RESOURCE, 0.0)),
             'AMMONIA_used_GWh': float(used.get('AMMONIA', 0.0)),
         })
@@ -416,7 +421,7 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
                [{'type': 'domain', 'colspan': 3}, None, None]],
         row_heights=[0.10, 0.13, 0.11, 0.16, 0.14, 0.36], vertical_spacing=0.05,
         subplot_titles=(
-            'Cout total [Meuro/an]', 'GWP total [ktCO2-eq./an]',
+            'Cout total [Meuro/an]', 'GWP [ktCO2-eq./an] : op (contraint) vs total',
             f'{RESOURCE} importe utilise [GWh/an]',
             'Energie primaire : ressources utilisees [GWh/an] (echelle fixe)',
             'Capacites installees electricite [GW_e] (echelle fixe)',
@@ -428,9 +433,17 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
     fig.add_trace(go.Scatter(x=pct, y=summary['total_cost_Meur'], mode='lines+markers',
                              line_color='#2563eb', showlegend=False,
                              hovertemplate='%{x:+.1f}%%<br>%{y:.0f} Meuro<extra></extra>'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=pct, y=summary['total_gwp_ktCO2'], mode='lines+markers',
-                             line_color='#dc2626', showlegend=False,
-                             hovertemplate='%{x:+.1f}%%<br>%{y:.0f} ktCO2<extra></extra>'), row=1, col=2)
+    # GWP : la grandeur contrainte est GWP_op (<= limite) ; le total inclut la construction
+    fig.add_trace(go.Scatter(x=pct, y=summary['gwp_op_ktCO2'], mode='lines+markers',
+                             line_color='#dc2626', name='GWP op (contraint)', showlegend=True,
+                             hovertemplate='op: %{x:+.1f}%%<br>%{y:.0f} ktCO2<extra></extra>'), row=1, col=2)
+    fig.add_trace(go.Scatter(x=pct, y=summary['total_gwp_ktCO2'], mode='lines',
+                             line=dict(color='#f59e0b', dash='dot'), name='GWP total (op+constr)',
+                             showlegend=True,
+                             hovertemplate='total: %{x:+.1f}%%<br>%{y:.0f} ktCO2<extra></extra>'), row=1, col=2)
+    fig.add_hline(y=GWP_LIMIT, line_dash='dash', line_color='#111', line_width=1,
+                  annotation_text=f'limite {GWP_LIMIT:.0f}', annotation_font_size=9,
+                  row=1, col=2)
     fig.add_trace(go.Scatter(x=pct, y=summary[f'{RESOURCE}_used_GWh'], mode='lines+markers',
                              line_color='#059669', showlegend=False,
                              hovertemplate='%{x:+.1f}%%<br>%{y:.0f} GWh<extra></extra>'), row=1, col=3)
