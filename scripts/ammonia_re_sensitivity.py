@@ -510,6 +510,8 @@ def build_site(summary, resource_use, elec_assets, ref_price, html_path, project
         margin=dict(l=60, r=30, t=80, b=60))
     for c in (1, 2, 3):
         fig.update_xaxes(title_text='Variation du prix [%]', row=1, col=c)
+    # cout total : axe Y resserre sur [43k, 45.1k] pour zoomer sur la variation
+    fig.update_yaxes(range=[43000, 45100], title_text='Meuro/an', row=1, col=1)
     fig.update_yaxes(range=[0, pe_max * 1.05], title_text='GWh/an', row=2, col=1)
     fig.update_yaxes(range=[0, ea_max * 1.05], title_text='GW_e', row=3, col=1)
     fig.update_xaxes(title_text='Heure (12 jours types x 24h)', row=4, col=1)
