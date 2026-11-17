@@ -1,0 +1,6 @@
+c_op_electricity,absolute,Uniform,0.686
+c_op_syn_fuels,absolute,Uniform,0.686
+c_op_hydrocarbons,absolute,Uniform,0.686
+c_inv_car,absolute,Uniform,0.233
+c_inv_e_prop,absolute,Uniform,0.396
+f_max_nuc,absolute,Uniform,2.81

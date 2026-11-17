@@ -1,0 +1,7 @@
+name,First-order Sobol indices,Total-order Sobol indices  
+c_inv_e_prop,0.271203,0.278048  
+c_op_syn_fuels,0.254646,0.272523  
+c_op_hydrocarbons,0.238508,0.250596  
+c_inv_car,0.093726,0.099912  
+f_max_nuc,0.069588,0.078041  
+c_op_electricity,0.045910,0.047298  
